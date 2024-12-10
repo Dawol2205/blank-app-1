@@ -1,131 +1,132 @@
 import streamlit as st
 import graphviz
+import pandas as pd
 
-def create_family_tree():
-    # 스트림릿 페이지 설정
+def create_extended_family_tree():
     st.set_page_config(page_title="한국식 족보 시각화", layout="wide")
-    st.title("한국식 가족 관계도")
+    st.title("한국식 가족 관계도 (확장판)")
     
-    # 사이드바에서 세대 선택
-    st.sidebar.title("세대 선택")
-    show_parents = st.sidebar.checkbox("부모님 세대 보기", True)
-    show_siblings = st.sidebar.checkbox("형제자매 보기", True)
-    show_cousins = st.sidebar.checkbox("사촌 보기", True)
-    show_children = st.sidebar.checkbox("자녀 세대 보기", True)
-
-    # 그래프 생성
-    graph = graphviz.Digraph()
-    graph.attr(rankdir='TB')
+    # 탭 생성
+    tab1, tab2 = st.tabs(["관계도 시각화", "촌수별 호칭 편집"])
     
-    # 노드 스타일 설정
-    graph.attr('node', shape='box', style='filled', fillcolor='lightblue')
+    with tab1:
+        # 사이드바 컨트롤
+        st.sidebar.title("세대 및 관계 선택")
+        show_options = {
+            "직계존속": st.sidebar.checkbox("직계존속 보기 (증조/고조까지)", True),
+            "방계존속": st.sidebar.checkbox("방계존속 보기 (백부/숙부/고모 등)", True),
+            "동세대": st.sidebar.checkbox("동세대 보기 (형제/자매/사촌 등)", True),
+            "직계비속": st.sidebar.checkbox("직계비속 보기 (자녀/손자 등)", True),
+            "방계비속": st.sidebar.checkbox("방계비속 보기 (조카/종손 등)", True)
+        }
+        
+        # 기본 친족 관계 데이터
+        default_relations = {
+            "촌수": list(range(1, 11)),
+            "부계": [
+                "아버지",
+                "할아버지",
+                "증조할아버지",
+                "고조할아버지",
+                "5대조할아버지",
+                "6대조할아버지",
+                "7대조할아버지",
+                "8대조할아버지",
+                "9대조할아버지",
+                "10대조할아버지"
+            ],
+            "모계": [
+                "어머니",
+                "외할아버지",
+                "외증조할아버지",
+                "외고조할아버지",
+                "외5대조할아버지",
+                "외6대조할아버지",
+                "외7대조할아버지",
+                "외8대조할아버지",
+                "외9대조할아버지",
+                "외10대조할아버지"
+            ]
+        }
+        
+        # 세션 스테이트에서 관계 데이터 불러오기 또는 초기화
+        if 'relations_df' not in st.session_state:
+            st.session_state.relations_df = pd.DataFrame(default_relations)
+        
+        # 그래프 생성
+        graph = graphviz.Digraph()
+        graph.attr(rankdir='TB')
+        graph.attr('node', shape='box', style='filled', fillcolor='lightblue')
+        
+        # 자신 노드 생성
+        graph.node('me', '나', fillcolor='lightgreen')
+        
+        # 선택된 옵션에 따라 노드와 엣지 생성
+        if show_options["직계존속"]:
+            for i in range(1, 5):  # 4대까지만 표시
+                node_id = f'ancestor_{i}'
+                graph.node(node_id, st.session_state.relations_df.loc[i-1, '부계'])
+                if i == 1:
+                    graph.edge(node_id, 'me')
+                else:
+                    graph.edge(node_id, f'ancestor_{i-1}')
+        
+        if show_options["방계존속"]:
+            # 백부/숙부/고모 노드
+            relations = ['백부', '숙부', '고모']
+            for rel in relations:
+                graph.node(f'relative_{rel}', rel)
+                graph.edge('ancestor_1', f'relative_{rel}')
+        
+        if show_options["동세대"]:
+            # 형제/자매/사촌 노드
+            siblings = ['형', '누나', '동생']
+            for sib in siblings:
+                graph.node(f'sibling_{sib}', sib)
+                graph.edge('ancestor_1', f'sibling_{sib}')
+        
+        # 그래프 표시
+        st.graphviz_chart(graph)
     
-    # 부모님 세대
-    if show_parents:
-        # 조부모
-        graph.node('grandfather_f', '할아버지(친가)')
-        graph.node('grandmother_f', '할머니(친가)')
-        graph.node('grandfather_m', '외할아버지')
-        graph.node('grandmother_m', '외할머니')
+    with tab2:
+        st.header("촌수별 호칭 편집")
         
-        # 부모님
-        graph.node('father', '아버지')
-        graph.node('mother', '어머니')
-        graph.node('uncle1', '큰아버지')
-        graph.node('uncle2', '작은아버지')
-        graph.node('aunt1', '고모')
-        graph.node('maternal_uncle', '외삼촌')
-        graph.node('maternal_aunt', '이모')
+        # 데이터프레임 편집 기능
+        edited_df = st.data_editor(
+            st.session_state.relations_df,
+            use_container_width=True,
+            num_rows="dynamic"
+        )
         
-        # 조부모-부모 관계
-        graph.edge('grandfather_f', 'father')
-        graph.edge('grandmother_f', 'father')
-        graph.edge('grandfather_f', 'uncle1')
-        graph.edge('grandmother_f', 'uncle1')
-        graph.edge('grandfather_f', 'uncle2')
-        graph.edge('grandmother_f', 'uncle2')
-        graph.edge('grandfather_f', 'aunt1')
-        graph.edge('grandmother_f', 'aunt1')
+        # 변경사항 저장
+        if st.button("변경사항 저장"):
+            st.session_state.relations_df = edited_df
+            st.success("저장되었습니다!")
         
-        graph.edge('grandfather_m', 'mother')
-        graph.edge('grandmother_m', 'mother')
-        graph.edge('grandfather_m', 'maternal_uncle')
-        graph.edge('grandmother_m', 'maternal_uncle')
-        graph.edge('grandfather_m', 'maternal_aunt')
-        graph.edge('grandmother_m', 'maternal_aunt')
-
-    # 자신
-    graph.node('me', '나', fillcolor='lightgreen')
-    if show_parents:
-        graph.edge('father', 'me')
-        graph.edge('mother', 'me')
-
-    # 형제자매
-    if show_siblings:
-        graph.node('older_brother', '형/오빠')
-        graph.node('older_sister', '누나/언니')
-        graph.node('younger_brother', '남동생')
-        graph.node('younger_sister', '여동생')
+        # 호칭 설명
+        st.markdown("""
+        ### 촌수 계산 방법
+        1. 직계: 자신부터 시작해서 위로 올라가거나 아래로 내려가면서 계산
+        2. 방계: 공동 조상까지 올라갔다가 다시 내려오면서 계산
         
-        if show_parents:
-            graph.edge('father', 'older_brother')
-            graph.edge('mother', 'older_brother')
-            graph.edge('father', 'older_sister')
-            graph.edge('mother', 'older_sister')
-            graph.edge('father', 'younger_brother')
-            graph.edge('mother', 'younger_brother')
-            graph.edge('father', 'younger_sister')
-            graph.edge('mother', 'younger_sister')
-
-    # 사촌
-    if show_cousins:
-        # 친가 사촌
-        graph.node('paternal_cousin1', '친가 사촌(큰집)')
-        graph.node('paternal_cousin2', '친가 사촌(작은집)')
-        graph.node('cousin_aunt', '고종사촌')
+        ### 주요 호칭 설명
+        - 1촌: 부모, 자녀
+        - 2촌: 조부모, 손자녀, 형제자매
+        - 3촌: 증조부모, 증손자녀, 백부/숙부/고모
+        - 4촌: 고조부모, 고손자녀, 사촌
+        - 5촌: 5대조부모, 5대손, 오촌
+        - 6촌: 6대조부모, 6대손, 육촌
+        - 7촌: 7대조부모, 7대손, 칠촌
+        - 8촌: 8대조부모, 8대손, 팔촌
+        - 9촌: 9대조부모, 9대손, 구촌
+        - 10촌: 10대조부모, 10대손, 십촌
         
-        # 외가 사촌
-        graph.node('maternal_cousin1', '외사촌(외삼촌)')
-        graph.node('maternal_cousin2', '외사촌(이모)')
-        
-        if show_parents:
-            graph.edge('uncle1', 'paternal_cousin1')
-            graph.edge('uncle2', 'paternal_cousin2')
-            graph.edge('aunt1', 'cousin_aunt')
-            graph.edge('maternal_uncle', 'maternal_cousin1')
-            graph.edge('maternal_aunt', 'maternal_cousin2')
-
-    # 자녀 세대
-    if show_children:
-        graph.node('son', '아들')
-        graph.node('daughter', '딸')
-        graph.edge('me', 'son')
-        graph.edge('me', 'daughter')
-
-    # 그래프 렌더링
-    st.graphviz_chart(graph)
-
-    # 관계 설명
-    st.header("가족 관계 설명")
-    st.write("""
-    ### 기본 호칭 정리
-    - 부모님 호칭: 아버지(아빠), 어머니(엄마)
-    - 형제자매 호칭:
-        * 남자: 형(친형), 동생(남동생)
-        * 여자: 오빠(친오빠), 언니(친언니), 동생(여동생)
-    
-    ### 친가 호칭
-    - 할아버지, 할머니
-    - 큰아버지(백부), 작은아버지(숙부)
-    - 고모
-    - 사촌형제: 친사촌(從姉妹)
-    
-    ### 외가 호칭
-    - 외할아버지, 외할머니
-    - 외삼촌(외숙부)
-    - 이모
-    - 외사촌
-    """)
+        ### 참고사항
+        - 외가 친족은 호칭 앞에 '외'를 붙임
+        - 고모의 자녀는 '고종사촌'
+        - 이모의 자녀는 '이종사촌'
+        - 외삼촌의 자녀는 '외종사촌'
+        """)
 
 if __name__ == "__main__":
-    create_family_tree()
+    create_extended_family_tree()
