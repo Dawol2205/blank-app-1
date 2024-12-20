@@ -1,3 +1,9 @@
 streamlit
-graphviz
 pandas
+numpy
+plotly
+scikit-learn
+requests
+keras
+tensorflow
+matplotlib
