@@ -1,114 +1,153 @@
-import streamlit as st
-import graphviz
 import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.neighbors import KNeighborsRegressor
+import streamlit as st
+import asyncio
+import httpx
+import os
 
-def get_title(from_gender, to_gender, relation_type):
-    """기본적인 가족 호칭을 반환합니다."""
-    titles = {
-        'parent': {
-            '남성': '아버지',
-            '여성': '어머니'
-        },
-        'child': {
-            '남성': '아들',
-            '여성': '딸'
-        },
-        'spouse': {
-            '남성': '남편',
-            '여성': '아내'
-        },
-        'sibling': {
-            '남성': '오빠/형',
-            '여성': '언니/누나'
-        }
-    }
-    return titles.get(relation_type, {}).get(to_gender, '친척')
+DATA_DIR = "data"  # 데이터 저장 디렉토리
 
-def create_family_tree():
-    st.title('가계도 생성기')
-    
-    # 초기 상태 설정
-    if 'members' not in st.session_state:
-        st.session_state.members = {}
 
-    # 입력 폼
-    with st.form("member_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            name = st.text_input('이름')
-            gender = st.selectbox('성별', ['남성', '여성'])
-        with col2:
-            parent = st.text_input('부모 이름 (선택)')
-            spouse = st.text_input('배우자 이름 (선택)')
-        
-        submitted = st.form_submit_button("추가")
-        if submitted and name:
-            st.session_state.members[name] = {
-                'gender': gender,
-                'parent': parent if parent else None,
-                'spouse': spouse if spouse else None
-            }
-            st.success(f'{name} 추가됨!')
+# 비동기 데이터 수집
+async def fetch_symbol_list():
+    """거래소에서 모든 심볼 목록 가져오기"""
+    base_url = "https://api.bithumb.com/public/ticker/ALL_KRW"
+    async with httpx.AsyncClient() as client:
+        response = await client.get(base_url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data['status'] == '0000':
+                return [f"{symbol}_KRW" for symbol in data['data'].keys() if symbol != 'date']
+    return []
 
-    # 가계도 표시
-    if st.session_state.members:
-        st.subheader('가계도')
-        
-        # 기준 인물 선택
-        reference = st.selectbox(
-            '기준 인물 선택',
-            list(st.session_state.members.keys())
-        )
-        
-        # 그래프 생성
-        dot = graphviz.Digraph()
-        dot.attr(rankdir='TB')
-        
-        # 노드 추가
-        for name, info in st.session_state.members.items():
-            # 노드 색상 설정
-            color = 'lightblue' if info['gender'] == '남성' else 'pink'
-            
-            # 호칭 계산
-            title = ""
-            if name == reference:
-                title = "본인"
-            elif info['parent'] == reference:
-                title = get_title('parent', info['gender'], 'child')
-            elif st.session_state.members.get(reference, {}).get('parent') == name:
-                title = get_title('child', info['gender'], 'parent')
-            elif info['spouse'] == reference or st.session_state.members.get(reference, {}).get('spouse') == name:
-                title = get_title('spouse', info['gender'], 'spouse')
-            
-            # 레이블 생성
-            label = f"{name}\n({info['gender']})"
-            if title:
-                label += f"\n{title}"
-            
-            dot.node(name, label, style='filled', fillcolor=color)
-        
-        # 관계선 추가
-        for name, info in st.session_state.members.items():
-            # 부모-자식 관계
-            if info['parent'] and info['parent'] in st.session_state.members:
-                dot.edge(info['parent'], name)
-            
-            # 배우자 관계
-            if info['spouse'] and info['spouse'] in st.session_state.members:
-                if name < info['spouse']:  # 중복 방지
-                    dot.edge(name, info['spouse'], dir='none', style='dashed', color='red')
-        
-        st.graphviz_chart(dot)
+async def fetch_symbol_data_async(symbol, timeframe="24h"):
+    """비동기로 심볼 데이터 가져오기"""
+    base_url = "https://api.bithumb.com/public/candlestick"
+    url = f"{base_url}/{symbol}/{timeframe}"
 
-        # 구성원 목록 표시
-        st.subheader('등록된 구성원')
-        df = pd.DataFrame.from_dict(st.session_state.members, orient='index')
-        st.dataframe(df)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data['status'] == '0000':
+                df = pd.DataFrame(data['data'], columns=['timestamp', 'open', 'close', 'high', 'low', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'].astype(int), unit='ms')
 
-    # 초기화 버튼
-    if st.button('초기화'):
-        st.session_state.members = {}
-        st.success('가계도가 초기화되었습니다.')
+                # 숫자형 변환
+                numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+                for col in numeric_columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
 
-if __name__ == '__main__':
-    create_family_tree()
+                # 결측값 제거
+                return df.dropna()
+    return None
+
+async def fetch_all_symbols_data(symbols, timeframe="24h"):
+    """모든 심볼 데이터를 비동기로 수집"""
+    tasks = [fetch_symbol_data_async(symbol, timeframe) for symbol in symbols]
+    return await asyncio.gather(*tasks)
+
+def calculate_technical_indicators(df):
+    """모든 기술적 지표 계산"""
+    df = df.copy()
+
+    # 기본 가격 지표 - 이동평균선
+    for period in [5, 10, 20, 50, 200]:
+        df[f'MA{period}'] = df['close'].rolling(window=period).mean()
+
+    # RSI 계산
+    delta = df['close'].diff()
+    gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+    loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
+    df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+
+    # MACD 계산
+    df['MACD_Line'] = df['close'].ewm(span=12, adjust=False).mean() - df['close'].ewm(span=26, adjust=False).mean()
+    df['Signal_Line'] = df['MACD_Line'].ewm(span=9, adjust=False).mean()
+
+    # 볼린저 밴드 계산
+    df['BB_Middle'] = df['close'].rolling(window=20).mean()
+    df['BB_Upper'] = df['BB_Middle'] + 2 * df['close'].rolling(window=20).std()
+    df['BB_Lower'] = df['BB_Middle'] - 2 * df['close'].rolling(window=20).std()
+
+    # 스토캐스틱 오실레이터 계산
+    low_min = df['low'].rolling(window=14).min()
+    high_max = df['high'].rolling(window=14).max()
+    df['%K'] = ((df['close'] - low_min) / (high_max - low_min)) * 100
+    df['%D'] = df['%K'].rolling(window=3).mean()
+
+    # 거래량 관련 지표
+    df['Volume_MA'] = df['volume'].rolling(window=20).mean()
+    df['Volume_STD'] = df['volume'].rolling(window=20).std()
+    df['Volume_Zscore'] = (df['volume'] - df['Volume_MA']) / df['Volume_STD']
+    df['Volume_Momentum'] = df['volume'].pct_change(5)
+
+    # 심리 지표 (임의 값 설정)
+    df['Fear_Greed'] = 50 + (df['RSI'] - 50) / 50 * 20  # RSI를 기반으로 계산
+    df['Fear_Greed'] = df['Fear_Greed'].clip(0, 100)
+
+    # 모멘텀 지표
+    df['Efficiency_Ratio'] = abs(df['close'] - df['close'].shift(14)) / \
+                             (df['high'].rolling(window=14).max() - df['low'].rolling(window=14).min())
+
+    # 결측값 처리
+    df = df.fillna(0)
+    return df
+
+class KNNPredictor:
+    def __init__(self, n_neighbors=5):
+        self.knn = KNeighborsRegressor(n_neighbors=n_neighbors)
+        self.scaler = StandardScaler()
+
+    def prepare_features(self, df):
+        """KNN용 특징 생성"""
+        df = calculate_technical_indicators(df)
+        features = df[['RSI', 'MACD_Line', 'Signal_Line', 'BB_Upper', 'BB_Lower', '%K', '%D',
+                       'Volume_Momentum', 'Fear_Greed', 'Efficiency_Ratio']].fillna(0)
+        return features
+
+    def train(self, df):
+        """KNN 모델 학습"""
+        features = self.prepare_features(df)
+        target = df['close'].pct_change().shift(-1).iloc[:-1]
+        features = features.iloc[:-1]
+
+        valid = ~(pd.isna(target) | np.isinf(target))
+        features = features[valid]
+        target = target[valid]
+
+        if len(features) < 2:
+            raise ValueError("학습 데이터가 너무 적습니다.")
+
+        self.knn.n_neighbors = min(self.knn.n_neighbors, len(features))
+
+        self.features = self.scaler.fit_transform(features)
+        self.target = target
+
+        if len(self.features) > 0:
+            self.knn.fit(self.features, self.target)
+
+    def predict(self, df):
+        """KNN 예측"""
+        features = self.prepare_features(df)
+        features_scaled = self.scaler.transform(features)
+        return self.knn.predict(features_scaled[-1:])[0]
+
+def analyze_with_knn(df):
+    """KNN 분석 실행"""
+    knn_predictor = KNNPredictor(n_neighbors=5)
+
+    try:
+        knn_predictor.train(df)
+        prediction = knn_predictor.predict(df)
+
+        if prediction > 0.02:
+            return "매수 신호", f"예상 상승률: {prediction * 100:.2f}%"
+        elif prediction < -0.02:
+            return "매도 신호", f"예상 하락률: {prediction * 100:.2f}%"
+        else:
+            return "중립 신호", f"예상 변동률: {prediction * 100:.2f}%"
+    except ValueError as e:
+        return "데이터 부족", str(e)
